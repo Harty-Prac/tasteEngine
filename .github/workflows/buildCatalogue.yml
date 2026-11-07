@@ -1,0 +1,43 @@
+name: buildCatalogue
+
+on:
+  schedule:
+    # 03:00 UTC daily
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+# Required so the job can commit the regenerated catalogue back to the repo.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build catalogue
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          PAGES_PER_GENRE: "8"
+          PAGES_GLOBAL: "12"
+          MIN_VOTES: "50"
+        run: node scripts/buildCatalogue.js
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/catalogue.json
+          if git diff --staged --quiet; then
+            echo "catalogue unchanged, nothing to commit"
+          else
+            git commit -m "chore: refresh catalogue"
+            git push
+          fi

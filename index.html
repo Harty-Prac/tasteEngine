@@ -30,7 +30,7 @@
       <span class="progress" id="rateProgress"></span>
     </div>
     <div id="rateStage" class="stage">
-      <p class="emptyState">Set a TMDB key in Settings, pick a genre, then "Load batch".</p>
+      <p class="emptyState">Loading catalogue…</p>
     </div>
   </section>
 
@@ -64,11 +64,9 @@
   <!-- SETTINGS TAB -->
   <section id="tab-settings" class="tabPanel">
     <div class="settingsBlock">
-      <h2>TMDB API key</h2>
-      <p class="hint">Free, read-only key from themoviedb.org/settings/api. Safe to keep client-side — stored only in this browser's localStorage, never sent anywhere but TMDB.</p>
-      <input type="text" id="tmdbKeyInput" placeholder="paste your TMDB API key">
-      <button id="saveKeyBtn">Save key</button>
-      <span id="keyStatus"></span>
+      <h2>Film data</h2>
+      <p class="hint">No API key needed. The catalogue is rebuilt nightly by a GitHub Actions workflow that holds the TMDB key as a repository secret — the key never reaches your browser, and this page makes no API calls.</p>
+      <p id="sourceLine" class="hint"></p>
     </div>
 
     <div class="settingsBlock">

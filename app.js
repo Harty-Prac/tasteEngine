@@ -1,27 +1,79 @@
 // tasteEngine — static, client-only movie taste tracker + recommender.
-// No backend. All state in localStorage. TMDB called directly from the browser.
+// No backend, no API key in the browser. Film data comes from
+// data/catalogue.json, rebuilt nightly by a GitHub Actions workflow that
+// holds the TMDB key as a repository secret. Ratings live in localStorage.
 
-const LS_KEY_API = "tasteEngine.tmdbKey";
-const LS_KEY_RATINGS = "tasteEngine.ratings";
-const TMDB_BASE = "https://api.themoviedb.org/3";
-const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
+const lsKeyRatings = "tasteEngine.ratings";
+const posterBase = "https://image.tmdb.org/t/p/w342"; // public CDN, needs no key
+const cataloguePath = "data/catalogue.json";
 
-let genreMap = {};        // id -> name
+let genreMap = {};
+let catalogue = [];
+let catalogueMeta = { generated: null, count: 0 };
 let ratings = loadRatings();
-let rateQueue = [];       // movies pending rating in current batch
-let rateSeenIds = new Set(Object.keys(ratings).map(Number));
+let ratedIds = new Set(Object.keys(ratings).map(Number));
+let rateQueue = [];
 
 // ---------- storage ----------
 
 function loadRatings(){
-  try{ return JSON.parse(localStorage.getItem(LS_KEY_RATINGS)) || {}; }
+  try{ return JSON.parse(localStorage.getItem(lsKeyRatings)) || {}; }
   catch(e){ return {}; }
 }
+
 function saveRatings(){
-  localStorage.setItem(LS_KEY_RATINGS, JSON.stringify(ratings));
+  try{ localStorage.setItem(lsKeyRatings, JSON.stringify(ratings)); }
+  catch(e){ console.warn("could not save ratings", e); }
 }
-function getApiKey(){
-  return localStorage.getItem(LS_KEY_API) || "";
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  }[c]));
+}
+
+// ---------- catalogue ----------
+
+async function loadCatalogue(){
+  const res = await fetch(cataloguePath, { cache: "no-cache" });
+  if(!res.ok) throw new Error("catalogue not found (" + res.status + ")");
+  const data = await res.json();
+  genreMap = data.genres || {};
+  catalogue = data.movies || [];
+  catalogueMeta = { generated: data.generated || null, count: catalogue.length };
+  if(catalogue.length === 0) throw new Error("catalogue is empty");
+  populateGenreSelects();
+}
+
+function populateGenreSelects(){
+  const rateSel = document.getElementById("rateGenre");
+  const recSel = document.getElementById("recGenreScope");
+  rateSel.innerHTML = `<option value="all">All genres</option>`;
+  recSel.innerHTML = `<option value="all">All genres</option>`;
+  Object.entries(genreMap)
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .forEach(([id, name]) => {
+      const opt = `<option value="${id}">${escapeHtml(name)}</option>`;
+      rateSel.insertAdjacentHTML("beforeend", opt);
+      recSel.insertAdjacentHTML("beforeend", opt);
+    });
+}
+
+function inGenre(movie, genreId){
+  if(genreId === "all") return true;
+  return (movie.g || []).includes(Number(genreId));
+}
+
+function unrated(genreId){
+  return catalogue.filter(m => !ratedIds.has(m.i) && inGenre(m, genreId));
+}
+
+function posterStyle(posterPath){
+  return posterPath ? `background-image:url('${posterBase}${posterPath}')` : "";
+}
+
+function genreNamesFor(movie){
+  return (movie.g || []).map(id => genreMap[id]).filter(Boolean).join(" · ");
 }
 
 // ---------- tabs ----------
@@ -33,107 +85,62 @@ document.querySelectorAll(".tabBtn").forEach(btn => {
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
     if(btn.dataset.tab === "dashboard") renderDashboard();
-    if(btn.dataset.tab === "settings") renderStats();
+    if(btn.dataset.tab === "settings") renderSettings();
   });
 });
 
-// ---------- TMDB calls ----------
-
-async function tmdbFetch(path, params){
-  const key = getApiKey();
-  if(!key){ throw new Error("no TMDB key set"); }
-  const usp = new URLSearchParams({ api_key: key, ...params });
-  const res = await fetch(`${TMDB_BASE}${path}?${usp.toString()}`);
-  if(!res.ok) throw new Error("TMDB error " + res.status);
-  return res.json();
-}
-
-async function loadGenres(){
-  if(!getApiKey()) return;
-  try{
-    const data = await tmdbFetch("/genre/movie/list", {});
-    genreMap = {};
-    data.genres.forEach(g => genreMap[g.id] = g.name);
-    populateGenreSelects();
-  }catch(e){
-    console.warn("genre load failed", e);
-  }
-}
-
-function populateGenreSelects(){
-  const rateSel = document.getElementById("rateGenre");
-  const recSel = document.getElementById("recGenreScope");
-  rateSel.innerHTML = "";
-  recSel.innerHTML = `<option value="all">All genres</option>`;
-  Object.entries(genreMap)
-    .sort((a,b) => a[1].localeCompare(b[1]))
-    .forEach(([id, name]) => {
-      rateSel.insertAdjacentHTML("beforeend", `<option value="${id}">${name}</option>`);
-      recSel.insertAdjacentHTML("beforeend", `<option value="${id}">${name}</option>`);
-    });
-}
-
-async function fetchCandidates(genreId, page){
-  const params = { sort_by: "popularity.desc", page: page || 1, "vote_count.gte": 50 };
-  if(genreId && genreId !== "all") params.with_genres = genreId;
-  const data = await tmdbFetch("/discover/movie", params);
-  return data.results || [];
-}
-
 // ---------- RATE TAB ----------
 
-document.getElementById("loadBatchBtn").addEventListener("click", async () => {
+document.getElementById("loadBatchBtn").addEventListener("click", () => {
   const stage = document.getElementById("rateStage");
-  if(!getApiKey()){
-    stage.innerHTML = `<p class="emptyState">Set your TMDB key in Settings first.</p>`;
+  if(catalogue.length === 0){
+    stage.innerHTML = `<p class="emptyState">Catalogue hasn't loaded.</p>`;
     return;
   }
   const genreId = document.getElementById("rateGenre").value;
-  stage.innerHTML = `<p class="emptyState">Loading…</p>`;
-  try{
-    let page = 1, pool = [];
-    // pull a couple pages so we have enough unseen titles
-    while(pool.length < 10 && page <= 5){
-      const results = await fetchCandidates(genreId, page);
-      if(results.length === 0) break;
-      pool = pool.concat(results.filter(m => !rateSeenIds.has(m.id)));
-      page++;
-    }
-    rateQueue = pool.slice(0, 10);
-    if(rateQueue.length === 0){
-      stage.innerHTML = `<p class="emptyState">No new unrated titles found in this genre right now.</p>`;
-      return;
-    }
-    renderRateCard();
-  }catch(e){
-    stage.innerHTML = `<p class="emptyState">Error: ${e.message}</p>`;
+  const pool = unrated(genreId);
+  if(pool.length === 0){
+    stage.innerHTML = `<p class="emptyState">You've rated everything in this genre. Pick another, or wait for tonight's catalogue refresh.</p>`;
+    return;
   }
+  // Draw from the top slice by popularity, shuffled, so repeated batches
+  // aren't always the same handful of blockbusters in the same order.
+  const slice = pool.slice(0, Math.min(60, pool.length));
+  rateQueue = shuffle(slice).slice(0, 10);
+  renderRateCard();
 });
+
+function shuffle(arr){
+  const a = arr.slice();
+  for(let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 function renderRateCard(){
   const stage = document.getElementById("rateStage");
   const progress = document.getElementById("rateProgress");
   const movie = rateQueue[0];
+
   if(!movie){
     stage.innerHTML = `<p class="emptyState">Batch done. Load another.</p>`;
     progress.textContent = "";
     return;
   }
-  progress.textContent = `${rateQueue.length} left in batch`;
-  const year = (movie.release_date || "").slice(0,4) || "—";
-  const poster = movie.poster_path ? `${POSTER_BASE}${movie.poster_path}` : "";
-  const genreNames = (movie.genre_ids||[]).map(id => genreMap[id]).filter(Boolean).join(" · ");
 
-  const ratingButtons = Array.from({length:10}, (_,i)=>i+1)
+  progress.textContent = `${rateQueue.length} left in batch`;
+  const ratingButtons = Array.from({length: 10}, (_, i) => i + 1)
     .map(n => `<button data-score="${n}">${n}</button>`).join("");
 
   stage.innerHTML = `
     <div class="card">
-      <div class="poster" style="${poster ? `background-image:url('${poster}')` : ""}"></div>
+      <div class="poster" style="${posterStyle(movie.p)}"></div>
       <div class="cardBody">
-        <div class="tag">${genreNames || "Unknown"}</div>
-        <div class="title">${escapeHtml(movie.title)}</div>
-        <div class="year">${year}</div>
+        <div class="tag">${escapeHtml(genreNamesFor(movie) || "Unknown")}</div>
+        <div class="title">${escapeHtml(movie.t)}</div>
+        <div class="year">${movie.y || "—"}${movie.v ? " · TMDB " + movie.v : ""}</div>
         <div class="rateGrid">${ratingButtons}</div>
         <div class="belowRow">
           <button id="watchlistBtn">Watchlist</button>
@@ -142,6 +149,7 @@ function renderRateCard(){
       </div>
     </div>
   `;
+
   stage.querySelectorAll(".rateGrid button").forEach(btn => {
     btn.addEventListener("click", () => submitRating(movie, Number(btn.dataset.score)));
   });
@@ -150,125 +158,119 @@ function renderRateCard(){
 }
 
 function submitRating(movie, value){
-  ratings[movie.id] = {
-    title: movie.title,
-    year: (movie.release_date||"").slice(0,4) || null,
-    genreIds: movie.genre_ids || [],
-    poster: movie.poster_path || null,
+  ratings[movie.i] = {
+    title: movie.t,
+    year: movie.y || null,
+    genreIds: movie.g || [],
+    poster: movie.p || null,
     rating: value,
     ts: Date.now()
   };
-  rateSeenIds.add(movie.id);
+  ratedIds.add(movie.i);
   saveRatings();
-  rateQueue.shift();
+  if(rateQueue[0] && rateQueue[0].i === movie.i) rateQueue.shift();
   renderRateCard();
-}
-
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
 // ---------- scoring ----------
 
-function filteredRatings(windowSize){
+function scoredRatings(windowSize){
   const entries = Object.entries(ratings)
-    .filter(([id, r]) => typeof r.rating === "number")
-    .sort((a,b) => b[1].ts - a[1].ts); // newest first
+    .filter(([, r]) => typeof r.rating === "number")
+    .sort((a, b) => b[1].ts - a[1].ts); // newest first
   if(windowSize === "all") return entries;
   return entries.slice(0, Number(windowSize));
 }
 
 function genreStats(windowSize){
-  const entries = filteredRatings(windowSize || "all");
-  const stats = {}; // id -> {sum, count}
-  entries.forEach(([id, r]) => {
-    (r.genreIds||[]).forEach(g => {
-      if(!stats[g]) stats[g] = {sum:0, count:0};
-      stats[g].sum += r.rating;
-      stats[g].count += 1;
+  const entries = scoredRatings(windowSize || "all");
+  const acc = {};
+  entries.forEach(([, r]) => {
+    (r.genreIds || []).forEach(g => {
+      if(!acc[g]) acc[g] = { sum: 0, count: 0 };
+      acc[g].sum += r.rating;
+      acc[g].count += 1;
     });
   });
-  const avg = {};
-  Object.entries(stats).forEach(([g, s]) => avg[g] = {avg: s.sum/s.count, count: s.count});
-  return avg;
+  const out = {};
+  Object.entries(acc).forEach(([g, s]) => {
+    out[g] = { avg: s.sum / s.count, count: s.count };
+  });
+  return out;
 }
 
 // ---------- RECOMMEND TAB ----------
 
-document.getElementById("recommendBtn").addEventListener("click", async () => {
+document.getElementById("recommendBtn").addEventListener("click", () => {
   const stage = document.getElementById("recStage");
-  if(!getApiKey()){
-    stage.innerHTML = `<p class="emptyState">Set your TMDB key in Settings first.</p>`;
+  if(catalogue.length === 0){
+    stage.innerHTML = `<p class="emptyState">Catalogue hasn't loaded.</p>`;
     return;
   }
+
   const scope = document.getElementById("recGenreScope").value;
   const windowSize = document.getElementById("recWindow").value;
   const stats = genreStats(windowSize);
-  const totalRated = filteredRatings(windowSize).length;
+  const trainedOn = scoredRatings(windowSize).length;
 
-  if(totalRated === 0){
-    stage.innerHTML = `<p class="emptyState">No ratings in this window yet. Rate some movies first.</p>`;
+  if(trainedOn === 0){
+    stage.innerHTML = `<p class="emptyState">No ratings in this window yet. Rate some titles first.</p>`;
     return;
   }
 
-  stage.innerHTML = `<p class="emptyState">Thinking…</p>`;
-  try{
-    let pool = [];
-    let pages = [1,2,3];
-    for(const page of pages){
-      const results = await fetchCandidates(scope, page);
-      pool = pool.concat(results);
-    }
-    pool = pool.filter(m => !rateSeenIds.has(m.id));
+  const pool = unrated(scope);
+  const scored = [];
 
-    let best = null, bestScore = -1, bestMatches = [];
-    for(const m of pool){
-      const overlapping = (m.genre_ids||[]).filter(g => stats[g]);
-      if(overlapping.length === 0) continue;
-      const score = overlapping.reduce((sum,g) => sum + stats[g].avg, 0) / overlapping.length;
-      if(score > bestScore){
-        bestScore = score; best = m; bestMatches = overlapping;
-      }
-    }
+  for(const m of pool){
+    const overlap = (m.g || []).filter(g => stats[g]);
+    if(overlap.length === 0) continue;
+    const predicted = overlap.reduce((sum, g) => sum + stats[g].avg, 0) / overlap.length;
+    const sampleCount = overlap.reduce((sum, g) => sum + stats[g].count, 0);
+    scored.push({ movie: m, predicted, overlap, sampleCount });
+  }
 
-    if(!best){
-      stage.innerHTML = `<p class="emptyState">Couldn't find a match in this scope. Try "All genres" or rate more titles.</p>`;
-      return;
-    }
+  if(scored.length === 0){
+    stage.innerHTML = `<p class="emptyState">Nothing in this scope overlaps the genres you've rated. Try "All genres", or rate a few titles in this genre first.</p>`;
+    return;
+  }
 
-    const sampleCount = bestMatches.reduce((s,g) => s + stats[g].count, 0);
-    const confidence = Math.min(95, Math.round((Math.log2(sampleCount+1) / Math.log2(30)) * 100));
-    const matchNames = bestMatches.map(g => `${genreMap[g]} (${stats[g].avg.toFixed(1)} avg)`).join(", ");
-    const year = (best.release_date||"").slice(0,4) || "—";
-    const poster = best.poster_path ? `${POSTER_BASE}${best.poster_path}` : "";
+  // Pick from the top few rather than always the single highest, so asking
+  // twice in a row doesn't hand back the same film.
+  scored.sort((a, b) => b.predicted - a.predicted);
+  const topSlice = scored.slice(0, Math.min(5, scored.length));
+  const pick = topSlice[Math.floor(Math.random() * topSlice.length)];
 
-    stage.innerHTML = `
-      <div class="card recCard">
-        <div class="poster" style="${poster ? `background-image:url('${poster}')` : ""}"></div>
-        <div class="cardBody">
-          <div class="tag">Predicted score ${bestScore.toFixed(1)}/10</div>
-          <div class="title">${escapeHtml(best.title)}</div>
-          <div class="year">${year}</div>
-          <div class="why">Matches your taste in ${matchNames}.</div>
-          <div class="confidence">${confidence}% confidence — based on ${sampleCount} rated title${sampleCount===1?"":"s"} in these genres</div>
-          <div class="belowRow">
-            <button id="recWatchlist">Watchlist this</button>
-            <button id="recSkip">Not interested</button>
-          </div>
+  const { movie, predicted, overlap, sampleCount } = pick;
+  const confidence = Math.min(95, Math.round((Math.log2(sampleCount + 1) / Math.log2(30)) * 100));
+  const matchNames = overlap
+    .map(g => `${genreMap[g]} (${stats[g].avg.toFixed(1)} avg)`)
+    .join(", ");
+
+  stage.innerHTML = `
+    <div class="card recCard">
+      <div class="poster" style="${posterStyle(movie.p)}"></div>
+      <div class="cardBody">
+        <div class="tag">Predicted ${predicted.toFixed(1)}/10</div>
+        <div class="title">${escapeHtml(movie.t)}</div>
+        <div class="year">${movie.y || "—"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        <div class="why">Matches your taste in ${escapeHtml(matchNames)}.</div>
+        <div class="confidence">${confidence}% confidence — ${sampleCount} rated title${sampleCount === 1 ? "" : "s"} in these genres, trained on ${trainedOn} rating${trainedOn === 1 ? "" : "s"}</div>
+        <div class="belowRow">
+          <button id="recWatchlist">Watchlist this</button>
+          <button id="recSkip">Not interested</button>
         </div>
       </div>
-    `;
-    document.getElementById("recWatchlist").addEventListener("click", () => {
-      submitRating(best, "watchlist");
-      document.getElementById("recommendBtn").click();
-    });
-    document.getElementById("recSkip").addEventListener("click", () => {
-      submitRating(best, "skip");
-      document.getElementById("recommendBtn").click();
-    });
-  }catch(e){
-    stage.innerHTML = `<p class="emptyState">Error: ${e.message}</p>`;
-  }
+    </div>
+  `;
+
+  document.getElementById("recWatchlist").addEventListener("click", () => {
+    submitRating(movie, "watchlist");
+    document.getElementById("recommendBtn").click();
+  });
+  document.getElementById("recSkip").addEventListener("click", () => {
+    submitRating(movie, "skip");
+    document.getElementById("recommendBtn").click();
+  });
 });
 
 // ---------- DASHBOARD ----------
@@ -277,17 +279,19 @@ function renderDashboard(){
   const el = document.getElementById("dashboardStage");
   const stats = genreStats("all");
   const rows = Object.entries(stats)
-    .sort((a,b) => b[1].avg - a[1].avg)
+    .sort((a, b) => b[1].avg - a[1].avg)
     .map(([g, s]) => `
       <div class="genreRow">
-        <span>${genreMap[g] || ("Genre " + g)}</span>
-        <span class="bar"><span style="width:${(s.avg/10*100)}%"></span></span>
+        <span>${escapeHtml(genreMap[g] || ("Genre " + g))}</span>
+        <span class="bar"><span style="width:${(s.avg / 10 * 100)}%"></span></span>
         <span>${s.avg.toFixed(1)} (${s.count})</span>
       </div>
     `).join("");
-  const totalRated = Object.values(ratings).filter(r => typeof r.rating === "number").length;
-  const totalSkip = Object.values(ratings).filter(r => r.rating === "skip").length;
-  const totalWatchlist = Object.values(ratings).filter(r => r.rating === "watchlist").length;
+
+  const vals = Object.values(ratings);
+  const totalRated = vals.filter(r => typeof r.rating === "number").length;
+  const totalSkip = vals.filter(r => r.rating === "skip").length;
+  const totalWatchlist = vals.filter(r => r.rating === "watchlist").length;
 
   el.innerHTML = `
     <p class="hint">${totalRated} rated · ${totalSkip} unseen · ${totalWatchlist} on watchlist</p>
@@ -297,19 +301,12 @@ function renderDashboard(){
 
 // ---------- SETTINGS ----------
 
-document.getElementById("saveKeyBtn").addEventListener("click", async () => {
-  const val = document.getElementById("tmdbKeyInput").value.trim();
-  if(!val) return;
-  localStorage.setItem(LS_KEY_API, val);
-  document.getElementById("keyStatus").textContent = "saved";
-  await loadGenres();
-});
-
 document.getElementById("exportBtn").addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify(ratings, null, 2)], {type:"application/json"});
+  const blob = new Blob([JSON.stringify(ratings, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "tasteEngine-ratings.json";
+  a.href = url;
+  a.download = "tasteEngine-ratings.json";
   a.click();
   URL.revokeObjectURL(url);
 });
@@ -321,10 +318,10 @@ document.getElementById("importInput").addEventListener("change", (e) => {
   reader.onload = () => {
     try{
       const incoming = JSON.parse(reader.result);
-      ratings = {...ratings, ...incoming};
-      rateSeenIds = new Set(Object.keys(ratings).map(Number));
+      ratings = { ...ratings, ...incoming };
+      ratedIds = new Set(Object.keys(ratings).map(Number));
       saveRatings();
-      renderStats();
+      renderSettings();
       alert("Imported " + Object.keys(incoming).length + " ratings.");
     }catch(err){
       alert("Invalid file: " + err.message);
@@ -336,25 +333,35 @@ document.getElementById("importInput").addEventListener("change", (e) => {
 document.getElementById("wipeBtn").addEventListener("click", () => {
   if(!confirm("Delete all ratings? This cannot be undone.")) return;
   ratings = {};
-  rateSeenIds = new Set();
+  ratedIds = new Set();
   saveRatings();
-  renderStats();
+  renderSettings();
   renderDashboard();
 });
 
-function renderStats(){
-  const total = Object.keys(ratings).length;
-  document.getElementById("statsLine").textContent = `${total} titles tracked total.`;
-  const key = getApiKey();
-  if(key){
-    document.getElementById("tmdbKeyInput").value = key;
-    document.getElementById("keyStatus").textContent = "saved";
+function renderSettings(){
+  document.getElementById("statsLine").textContent =
+    `${Object.keys(ratings).length} titles tracked.`;
+  const src = document.getElementById("sourceLine");
+  if(catalogueMeta.count === 0){
+    src.textContent = "Catalogue not loaded.";
+    return;
   }
+  const when = catalogueMeta.generated
+    ? new Date(catalogueMeta.generated).toLocaleString()
+    : "unknown date";
+  src.textContent = `${catalogueMeta.count} films · last refreshed ${when}`;
 }
 
 // ---------- init ----------
 
 (async function init(){
-  renderStats();
-  await loadGenres();
+  const stage = document.getElementById("rateStage");
+  try{
+    await loadCatalogue();
+    stage.innerHTML = `<p class="emptyState">Pick a genre, then "Load batch".</p>`;
+  }catch(e){
+    stage.innerHTML = `<p class="emptyState">Couldn't load the film catalogue (${escapeHtml(e.message)}).<br>Run the <strong>buildCatalogue</strong> workflow in the repo's Actions tab to generate it.</p>`;
+  }
+  renderSettings();
 })();
