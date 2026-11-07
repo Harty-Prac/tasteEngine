@@ -1,0 +1,50 @@
+:root{
+  --bg:#13120f; --surface:#1d1b16; --surface2:#262319; --fg:#f0ece2; --muted:#9a9184;
+  --accent:#e0a85c; --good:#4fcf9f; --bad:#e2735f;
+  --border:#38331f;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+h1,h2{font-weight:600;margin:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:10px}
+.tabs{display:flex;gap:6px}
+.tabBtn{background:var(--surface);color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+.tabBtn.active{color:var(--fg);border-color:var(--accent)}
+main{max-width:720px;margin:0 auto;padding:20px}
+.tabPanel{display:none}
+.tabPanel.active{display:block}
+.controlsRow{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:16px;font-size:13px}
+label{display:flex;flex-direction:column;gap:4px;color:var(--muted)}
+select,input[type=text]{background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:14px}
+button{background:var(--accent);color:#1a1507;border:none;border-radius:6px;padding:9px 16px;cursor:pointer;font-size:13px;font-weight:600}
+button.danger{background:var(--bad);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.emptyState{color:var(--muted);font-size:14px}
+.stage{display:flex;justify-content:center}
+
+.card{width:100%;max-width:320px;background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.poster{width:100%;aspect-ratio:2/3;background:var(--surface2) center/cover no-repeat}
+.cardBody{padding:14px 16px 18px}
+.tag{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.title{font-size:19px;margin:6px 0 2px;line-height:1.2}
+.year{color:var(--muted);font-size:13px}
+.rateGrid{display:flex;gap:5px;margin-top:12px;flex-wrap:wrap;justify-content:center}
+.rateGrid button{width:28px;height:34px;padding:0;background:var(--surface2);color:var(--fg);border:1px solid var(--border)}
+.rateGrid button:hover{border-color:var(--accent)}
+.belowRow{display:flex;gap:8px;margin-top:10px;justify-content:center}
+.belowRow button{background:none;border:none;color:var(--muted);text-decoration:underline;font-size:12px;padding:4px}
+
+.recCard .cardBody{padding:16px 18px 20px}
+.recCard .why{font-size:13px;color:var(--muted);margin-top:8px;line-height:1.4}
+.confidence{font-size:11px;color:var(--muted);margin-top:6px}
+
+.settingsBlock{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+.settingsBlock h2{font-size:14px;margin-bottom:8px}
+.hint{font-size:12px;color:var(--muted);margin:0 0 10px}
+.fileBtn{display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:9px 16px;cursor:pointer;font-size:13px;position:relative;color:var(--fg)}
+.fileBtn input{position:absolute;inset:0;opacity:0;cursor:pointer}
+#keyStatus{font-size:12px;color:var(--good);margin-left:8px}
+
+.genreRow{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px}
+.genreRow .bar{flex:1;height:6px;background:var(--surface2);border-radius:4px;margin:0 10px;position:relative;overflow:hidden}
+.genreRow .bar span{position:absolute;inset:0;background:var(--accent);border-radius:4px}

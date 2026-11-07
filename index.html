@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tasteEngine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>tasteEngine</h1>
+  <nav class="tabs">
+    <button class="tabBtn active" data-tab="rate">Rate</button>
+    <button class="tabBtn" data-tab="recommend">Recommend</button>
+    <button class="tabBtn" data-tab="dashboard">Dashboard</button>
+    <button class="tabBtn" data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+
+  <!-- RATE TAB -->
+  <section id="tab-rate" class="tabPanel active">
+    <div class="controlsRow">
+      <label>Genre
+        <select id="rateGenre"></select>
+      </label>
+      <button id="loadBatchBtn">Load batch</button>
+      <span class="progress" id="rateProgress"></span>
+    </div>
+    <div id="rateStage" class="stage">
+      <p class="emptyState">Set a TMDB key in Settings, pick a genre, then "Load batch".</p>
+    </div>
+  </section>
+
+  <!-- RECOMMEND TAB -->
+  <section id="tab-recommend" class="tabPanel">
+    <div class="controlsRow">
+      <label>Genre scope
+        <select id="recGenreScope">
+          <option value="all">All genres</option>
+        </select>
+      </label>
+      <label>Train on
+        <select id="recWindow">
+          <option value="10">Last 10 ratings</option>
+          <option value="50">Last 50 ratings</option>
+          <option value="all" selected>All-time</option>
+        </select>
+      </label>
+      <button id="recommendBtn">Suggest a movie</button>
+    </div>
+    <div id="recStage" class="stage">
+      <p class="emptyState">Rate some movies first, then ask for a suggestion.</p>
+    </div>
+  </section>
+
+  <!-- DASHBOARD TAB -->
+  <section id="tab-dashboard" class="tabPanel">
+    <div id="dashboardStage"></div>
+  </section>
+
+  <!-- SETTINGS TAB -->
+  <section id="tab-settings" class="tabPanel">
+    <div class="settingsBlock">
+      <h2>TMDB API key</h2>
+      <p class="hint">Free, read-only key from themoviedb.org/settings/api. Safe to keep client-side — stored only in this browser's localStorage, never sent anywhere but TMDB.</p>
+      <input type="text" id="tmdbKeyInput" placeholder="paste your TMDB API key">
+      <button id="saveKeyBtn">Save key</button>
+      <span id="keyStatus"></span>
+    </div>
+
+    <div class="settingsBlock">
+      <h2>Data</h2>
+      <button id="exportBtn">Export ratings (JSON)</button>
+      <label class="fileBtn">
+        Import ratings
+        <input type="file" id="importInput" accept="application/json">
+      </label>
+      <button id="wipeBtn" class="danger">Wipe all data</button>
+    </div>
+
+    <div class="settingsBlock">
+      <h2>Stats</h2>
+      <p id="statsLine"></p>
+    </div>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
