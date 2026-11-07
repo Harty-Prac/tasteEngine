@@ -1,4 +1,4 @@
-// buildCatalogue.js — runs in GitHub Actions only, never in the browser.
+// buildCatalogue.js, runs in GitHub Actions only, never in the browser.
 // Reads TMDB_API_KEY from the environment (Actions Secret) and writes
 // data/catalogue.json. The key never reaches the published site.
 
@@ -11,6 +11,9 @@ const pagesPerGenre = Number(process.env.PAGES_PER_GENRE || 8);
 const pagesGlobal = Number(process.env.PAGES_GLOBAL || 12);
 const minVotes = Number(process.env.MIN_VOTES || 50);
 const outPath = path.join(__dirname, "..", "data", "catalogue.json");
+// Plot summaries are bulky and are not used for scoring, so they ship in a
+// separate file the client fetches in the background.
+const overviewPath = path.join(__dirname, "..", "data", "overviews.json");
 
 if(!apiKey){
   console.error("TMDB_API_KEY is not set. Add it as a repository secret.");
@@ -72,28 +75,36 @@ async function main(){
   genreData.genres.forEach(g => { genres[g.id] = g.name; });
 
   const byId = new Map();
+  const overviewById = new Map();
   let requests = 0;
 
-  // Global popularity sweep first — catches big cross-genre titles.
+  const absorb = (results) => {
+    results.forEach(m => {
+      byId.set(m.id, trim(m));
+      if(m.overview) overviewById.set(m.id, m.overview);
+    });
+  };
+
+  // Global popularity sweep first, catches big cross-genre titles.
   for(let page = 1; page <= pagesGlobal; page++){
     const results = await discover(null, page);
     requests++;
-    results.forEach(m => byId.set(m.id, trim(m)));
+    absorb(results);
     await sleep(60);
     if(results.length === 0) break;
   }
-  console.log(`global sweep done — ${byId.size} titles`);
+  console.log(`global sweep done, ${byId.size} titles`);
 
   // Then per-genre, so niche genres aren't drowned out by blockbusters.
   for(const genreId of Object.keys(genres)){
     for(let page = 1; page <= pagesPerGenre; page++){
       const results = await discover(genreId, page);
       requests++;
-      results.forEach(m => byId.set(m.id, trim(m)));
+      absorb(results);
       await sleep(60);
       if(results.length === 0) break;
     }
-    console.log(`${genres[genreId]} done — running total ${byId.size}`);
+    console.log(`${genres[genreId]} done, running total ${byId.size}`);
   }
 
   const movies = Array.from(byId.values()).sort((a, b) => b.o - a.o);
@@ -105,11 +116,20 @@ async function main(){
     movies
   };
 
+  const overviews = {};
+  movies.forEach(m => {
+    const text = overviewById.get(m.i);
+    if(text) overviews[m.i] = text;
+  });
+
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, JSON.stringify(payload));
+  fs.writeFileSync(overviewPath, JSON.stringify(overviews));
 
   const kb = Math.round(fs.statSync(outPath).size / 1024);
+  const okb = Math.round(fs.statSync(overviewPath).size / 1024);
   console.log(`wrote ${movies.length} titles to data/catalogue.json (${kb} KB, ${requests} API calls)`);
+  console.log(`wrote ${Object.keys(overviews).length} summaries to data/overviews.json (${okb} KB)`);
 }
 
 main().catch(err => {

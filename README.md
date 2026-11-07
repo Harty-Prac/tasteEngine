@@ -14,7 +14,7 @@ GitHub Actions (nightly)          GitHub Pages (static)
 The TMDB key lives only in repository secrets. The workflow queries TMDB, trims
 each record to the handful of fields the client uses, and commits
 `data/catalogue.json` back to the repo. The published page fetches that one
-static file and makes zero API calls — nothing to extract from DevTools.
+static file and makes zero API calls, nothing to extract from DevTools.
 
 Posters load straight from `image.tmdb.org`, which needs no key at all.
 
@@ -37,9 +37,9 @@ After that the workflow refreshes the catalogue at 03:00 UTC daily.
 
 Workflow env vars in `.github/workflows/buildCatalogue.yml`:
 
-- `PAGES_GLOBAL` (12) — pages of overall-popularity sweep
-- `PAGES_PER_GENRE` (8) — pages fetched per genre
-- `MIN_VOTES` (50) — discards obscure titles with too few votes
+- `PAGES_GLOBAL` (12), pages of overall-popularity sweep
+- `PAGES_PER_GENRE` (8), pages fetched per genre
+- `MIN_VOTES` (50), discards obscure titles with too few votes
 
 Defaults give roughly 2,500-3,500 films at a few hundred KB.
 
@@ -47,8 +47,8 @@ Defaults give roughly 2,500-3,500 films at a few hundred KB.
 
 Per-genre averages are computed from your ratings, restricted to the chosen
 genre scope and rating window (last 10 / last 50 / all-time). Every unrated
-film in the catalogue gets a predicted score — the mean of your averages across
-its overlapping genres — and the suggestion is drawn at random from the top 5
+film in the catalogue gets a predicted score, the mean of your averages across
+its overlapping genres, and the suggestion is drawn at random from the top 5
 so asking twice doesn't return the same film. Confidence is a log curve over
 sample size, capped at 95%.
 

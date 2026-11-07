@@ -1,4 +1,4 @@
-// tasteEngine — static, client-only movie taste tracker + recommender.
+// tasteEngine, static, client-only movie taste tracker + recommender.
 // No backend, no API key in the browser. Film data comes from
 // data/catalogue.json, rebuilt nightly by a GitHub Actions workflow that
 // holds the TMDB key as a repository secret. Ratings live in localStorage.
@@ -6,12 +6,17 @@
 const lsKeyRatings = "tasteEngine.ratings";
 const lsKeyRateGenres = "tasteEngine.rateGenres";
 const lsKeyRecGenres = "tasteEngine.recGenres";
+const lsKeyBatchSize = "tasteEngine.batchSize";
+const overviewsPath = "data/overviews.json";
 const posterBase = "https://image.tmdb.org/t/p/w342"; // public CDN, needs no key
 const cataloguePath = "data/catalogue.json";
 
 let genreMap = {};
 let catalogue = [];
 let catalogueMeta = { generated: null, count: 0 };
+// Plot summaries live in their own file, fetched in the background so they
+// never delay the first render or the scoring, neither of which needs them.
+let overviews = {};
 let ratings = loadRatings();
 let ratedIds = new Set(Object.keys(ratings).map(Number));
 let rateQueue = [];
@@ -61,6 +66,34 @@ async function loadCatalogue(){
   catalogueMeta = { generated: data.generated || null, count: catalogue.length };
   if(catalogue.length === 0) throw new Error("catalogue is empty");
   renderGenreChips();
+}
+
+async function loadOverviews(){
+  try{
+    const res = await fetch(overviewsPath, { cache: "no-cache" });
+    if(!res.ok) return;
+    overviews = await res.json() || {};
+    // A card may already be on screen when this lands; fill it in.
+    hydrateVisibleOverview();
+  }catch(e){
+    console.warn("overviews unavailable", e);
+  }
+}
+
+function overviewHtml(movie){
+  const text = overviews[movie.i];
+  if(!text) return `<p class="overview empty" data-for="${movie.i}"></p>`;
+  return `<p class="overview" data-for="${movie.i}">${escapeHtml(text)}</p>`;
+}
+
+function hydrateVisibleOverview(){
+  document.querySelectorAll(".overview.empty").forEach(el => {
+    const text = overviews[el.dataset.for];
+    if(text){
+      el.textContent = text;
+      el.classList.remove("empty");
+    }
+  });
 }
 
 // ---------- genre chips ----------
@@ -159,11 +192,18 @@ document.getElementById("loadBatchBtn").addEventListener("click", () => {
     return;
   }
 
-  // Draw from the top slice by popularity, shuffled, so repeated batches
+  const batchSize = Number(document.getElementById("batchSize").value) || 10;
+
+  // Draw from a popularity-weighted slice, shuffled, so repeated batches
   // aren't always the same handful of blockbusters in the same order.
-  const slice = pool.slice(0, Math.min(60, pool.length));
-  rateQueue = shuffle(slice).slice(0, 10);
+  // The slice scales with batch size so a 50-film batch still has variety.
+  const sliceSize = Math.min(pool.length, Math.max(60, batchSize * 6));
+  rateQueue = shuffle(pool.slice(0, sliceSize)).slice(0, batchSize);
   renderRateCard();
+});
+
+document.getElementById("batchSize").addEventListener("change", (e) => {
+  try{ localStorage.setItem(lsKeyBatchSize, e.target.value); }catch(err){ /* non-fatal */ }
 });
 
 function shuffle(arr){
@@ -196,7 +236,8 @@ function renderRateCard(){
       <div class="cardBody">
         <div class="tag">${escapeHtml(genreNamesFor(movie) || "Unknown")}</div>
         <div class="title">${escapeHtml(movie.t)}</div>
-        <div class="year">${movie.y || "—"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        <div class="year">${movie.y || "n/a"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        ${overviewHtml(movie)}
         <div class="rateGrid">${ratingButtons}</div>
         <div class="belowRow">
           <button id="watchlistBtn">Watchlist</button>
@@ -322,9 +363,10 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
       <div class="cardBody">
         <div class="tag">Predicted ${predicted.toFixed(1)}/10</div>
         <div class="title">${escapeHtml(movie.t)}</div>
-        <div class="year">${movie.y || "—"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        <div class="year">${movie.y || "n/a"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        ${overviewHtml(movie)}
         <div class="why">Matches your taste in ${escapeHtml(matchNames)}.</div>
-        <div class="confidence">${confidence}% confidence — ${sampleCount} rated title${sampleCount === 1 ? "" : "s"} in these genres, trained on ${trainedOn} rating${trainedOn === 1 ? "" : "s"}</div>
+        <div class="confidence">${confidence}% confidence, from ${sampleCount} rated title${sampleCount === 1 ? "" : "s"} in these genres, trained on ${trainedOn} rating${trainedOn === 1 ? "" : "s"}</div>
         <div class="belowRow">
           <button id="recWatchlist">Watchlist this</button>
           <button id="recSkip">Not interested</button>
@@ -351,10 +393,10 @@ function renderDashboard(){
   const rows = Object.entries(stats)
     .sort((a, b) => b[1].avg - a[1].avg)
     .map(([g, s]) => `
-      <div class="genreRow">
-        <span>${escapeHtml(genreMap[g] || ("Genre " + g))}</span>
-        <span class="bar"><span style="width:${(s.rawAvg / 10 * 100)}%"></span></span>
-        <span>${s.rawAvg.toFixed(1)} (${s.count})</span>
+      <div class="genreRow${s.count < 3 ? " lowSample" : ""}">
+        <span class="name">${escapeHtml(genreMap[g] || ("Genre " + g))}</span>
+        <span class="bar"><span style="width:${(s.rawAvg / 10 * 100).toFixed(1)}%"></span></span>
+        <span class="val"><b>${s.rawAvg.toFixed(1)}</b> (${s.count})</span>
       </div>
     `).join("");
 
@@ -427,6 +469,14 @@ function renderSettings(){
 
 (async function init(){
   const stage = document.getElementById("rateStage");
+
+  try{
+    const savedBatch = localStorage.getItem(lsKeyBatchSize);
+    if(savedBatch) document.getElementById("batchSize").value = savedBatch;
+  }catch(e){ /* non-fatal */ }
+
+  loadOverviews(); // background, deliberately not awaited
+
   try{
     await loadCatalogue();
     stage.innerHTML = `<p class="emptyState">Pick your genres, then "Load batch".</p>`;
