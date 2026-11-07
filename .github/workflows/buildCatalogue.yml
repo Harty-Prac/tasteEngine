@@ -30,11 +30,27 @@ jobs:
           MIN_VOTES: "50"
         run: node scripts/buildCatalogue.js
 
+      - name: Enrich with keywords, cast and crew
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          ENRICH_BUDGET: "4000"
+          CAST_DEPTH: "5"
+        run: node scripts/enrich.js
+
+      # OMDb allows 1000 calls a day, so coverage builds up over a few nights.
+      # Never fails the run: the app works fine without these scores.
+      - name: Fetch IMDb and Rotten Tomatoes scores
+        continue-on-error: true
+        env:
+          OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
+          OMDB_BUDGET: "900"
+        run: node scripts/omdbRatings.js
+
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/catalogue.json data/overviews.json
+          git add data/
           if git diff --staged --quiet; then
             echo "catalogue unchanged, nothing to commit"
           else

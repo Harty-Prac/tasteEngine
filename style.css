@@ -52,9 +52,27 @@ button:disabled{opacity:.5;cursor:default}
 .overview{font-size:12.5px;line-height:1.5;color:var(--muted);margin:10px 0 0;display:-webkit-box;-webkit-line-clamp:5;line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
 .overview:empty{display:none}
 
+.scoreRow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.score{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 7px;font-size:11px;color:var(--muted)}
+.score b{color:var(--fg);font-weight:600}
+.credits{font-size:12px;color:var(--muted);margin-top:8px}
+
 .recCard .cardBody{padding:16px 18px 20px}
-.recCard .why{font-size:13px;color:var(--muted);margin-top:8px;line-height:1.4}
-.confidence{font-size:11px;color:var(--muted);margin-top:6px}
+.confidence{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.4}
+.warn{font-size:11px;color:var(--bad);margin-top:10px}
+
+.whyBlock{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
+.whyHead{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:7px}
+.reasons{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+.reasons li{display:grid;grid-template-columns:52px 1fr auto;gap:8px;align-items:baseline;font-size:12px}
+.reasons .rKind{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.reasons .rName{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reasons .rNum{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11px}
+.reasons li.up .rNum{color:var(--good)}
+.reasons li.down .rNum{color:var(--bad)}
+
+.dashHead{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin:22px 0 8px}
+.emptyState.small{font-size:12px;margin:4px 0}
 
 .settingsBlock{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:16px}
 .settingsBlock h2{font-size:14px;margin-bottom:8px}

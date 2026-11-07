@@ -1,27 +1,48 @@
-// tasteEngine, static, client-only movie taste tracker + recommender.
-// No backend, no API key in the browser. Film data comes from
-// data/catalogue.json, rebuilt nightly by a GitHub Actions workflow that
-// holds the TMDB key as a repository secret. Ratings live in localStorage.
+// tasteEngine, static client-only movie taste tracker and recommender.
+//
+// No backend and no API key in the browser. All film data is pre-baked into
+// static JSON by GitHub Actions, which holds the TMDB and OMDb keys as
+// repository secrets. Ratings live in localStorage.
+//
+// Scoring works on four feature types rather than genre alone:
+//   genre (18 of them), keyword (thousands), director, cast.
+// Each feature gets an affinity score from your ratings, shrunk toward your
+// overall mean so thin evidence cannot dominate, and a candidate film scores
+// as the evidence-weighted mean of its features.
 
 const lsKeyRatings = "tasteEngine.ratings";
 const lsKeyRateGenres = "tasteEngine.rateGenres";
 const lsKeyRecGenres = "tasteEngine.recGenres";
 const lsKeyBatchSize = "tasteEngine.batchSize";
-const overviewsPath = "data/overviews.json";
+
 const posterBase = "https://image.tmdb.org/t/p/w342"; // public CDN, needs no key
 const cataloguePath = "data/catalogue.json";
+const overviewsPath = "data/overviews.json";
+const enrichedPath = "data/enriched.json";
+const omdbPath = "data/omdb.json";
+
+// How hard each feature type is pulled toward your global mean. Lower means
+// the feature is trusted sooner. Genre needs the most evidence because every
+// film has two or three and they say the least.
+const shrinkByType = { g: 5, k: 2, d: 2, c: 3 };
+
+// How much a confident feature of each type counts toward the final score.
+// A director you have rated three times says far more than a shared genre.
+const weightByType = { g: 1.0, k: 2.0, d: 3.0, c: 1.5 };
 
 let genreMap = {};
 let catalogue = [];
 let catalogueMeta = { generated: null, count: 0 };
-// Plot summaries live in their own file, fetched in the background so they
-// never delay the first render or the scoring, neither of which needs them.
 let overviews = {};
+let enriched = { names: { k: {}, p: {} }, films: {} };
+let omdbScores = {};
+let enrichedReady = false;
+
 let ratings = loadRatings();
 let ratedIds = new Set(Object.keys(ratings).map(Number));
 let rateQueue = [];
 
-// Empty set means "all genres" everywhere it is used.
+// Empty set means all genres.
 let rateGenres = loadGenreSet(lsKeyRateGenres);
 let recGenres = loadGenreSet(lsKeyRecGenres);
 
@@ -55,12 +76,16 @@ function escapeHtml(s){
   }[c]));
 }
 
-// ---------- catalogue ----------
+// ---------- data loading ----------
+
+async function loadJson(url){
+  const res = await fetch(url, { cache: "no-cache" });
+  if(!res.ok) throw new Error(url + " returned " + res.status);
+  return res.json();
+}
 
 async function loadCatalogue(){
-  const res = await fetch(cataloguePath, { cache: "no-cache" });
-  if(!res.ok) throw new Error("catalogue not found (" + res.status + ")");
-  const data = await res.json();
+  const data = await loadJson(cataloguePath);
   genreMap = data.genres || {};
   catalogue = data.movies || [];
   catalogueMeta = { generated: data.generated || null, count: catalogue.length };
@@ -68,32 +93,147 @@ async function loadCatalogue(){
   renderGenreChips();
 }
 
-async function loadOverviews(){
-  try{
-    const res = await fetch(overviewsPath, { cache: "no-cache" });
-    if(!res.ok) return;
-    overviews = await res.json() || {};
-    // A card may already be on screen when this lands; fill it in.
-    hydrateVisibleOverview();
-  }catch(e){
-    console.warn("overviews unavailable", e);
-  }
-}
+// Summaries and rich features are not needed for first paint, so they load
+// in the background. Scoring waits on them only if you ask for a suggestion
+// before they land.
+let enrichedPromise = null;
 
-function overviewHtml(movie){
-  const text = overviews[movie.i];
-  if(!text) return `<p class="overview empty" data-for="${movie.i}"></p>`;
-  return `<p class="overview" data-for="${movie.i}">${escapeHtml(text)}</p>`;
-}
-
-function hydrateVisibleOverview(){
-  document.querySelectorAll(".overview.empty").forEach(el => {
-    const text = overviews[el.dataset.for];
-    if(text){
-      el.textContent = text;
-      el.classList.remove("empty");
+function loadExtras(){
+  enrichedPromise = (async () => {
+    const [ov, en, om] = await Promise.allSettled([
+      loadJson(overviewsPath),
+      loadJson(enrichedPath),
+      loadJson(omdbPath)
+    ]);
+    if(ov.status === "fulfilled") overviews = ov.value || {};
+    if(en.status === "fulfilled" && en.value && en.value.films){
+      enriched = en.value;
+      enriched.names = enriched.names || { k: {}, p: {} };
+      enriched.names.k = enriched.names.k || {};
+      enriched.names.p = enriched.names.p || {};
+      enrichedReady = true;
     }
+    if(om.status === "fulfilled") omdbScores = om.value || {};
+    hydrateVisibleCards();
+    renderSettings();
+  })();
+  return enrichedPromise;
+}
+
+// ---------- feature extraction ----------
+
+// Every film reduces to a list of typed feature keys such as "k:1234".
+function featuresOf(movie){
+  const out = (movie.g || []).map(g => "g:" + g);
+  const extra = enriched.films[movie.i];
+  if(extra && !extra.dead){
+    (extra.k || []).forEach(k => out.push("k:" + k));
+    (extra.d || []).forEach(d => out.push("d:" + d));
+    (extra.c || []).forEach(c => out.push("c:" + c));
+  }
+  return out;
+}
+
+// Rated films store their own feature list at rating time, so a rating still
+// counts even if that film later drops out of the catalogue.
+function featuresOfRating(entry, id){
+  if(Array.isArray(entry.features) && entry.features.length) return entry.features;
+  const out = (entry.genreIds || []).map(g => "g:" + g);
+  const extra = enriched.films[id];
+  if(extra && !extra.dead){
+    (extra.k || []).forEach(k => out.push("k:" + k));
+    (extra.d || []).forEach(d => out.push("d:" + d));
+    (extra.c || []).forEach(c => out.push("c:" + c));
+  }
+  return out;
+}
+
+function featureLabel(key){
+  const [type, id] = key.split(":");
+  if(type === "g") return genreMap[id] || ("Genre " + id);
+  if(type === "k") return enriched.names.k[id] || ("keyword " + id);
+  return enriched.names.p[id] || ("person " + id);
+}
+
+function featureKind(key){
+  return { g: "genre", k: "theme", d: "director", c: "actor" }[key.split(":")[0]];
+}
+
+// ---------- taste profile ----------
+
+function scoredRatings(windowSize){
+  const entries = Object.entries(ratings)
+    .filter(([, r]) => typeof r.rating === "number")
+    .sort((a, b) => b[1].ts - a[1].ts); // newest first
+  if(windowSize === "all") return entries;
+  return entries.slice(0, Number(windowSize));
+}
+
+function buildProfile(windowSize){
+  const entries = scoredRatings(windowSize || "all");
+
+  let total = 0;
+  entries.forEach(([, r]) => { total += r.rating; });
+  const globalMean = entries.length ? total / entries.length : 0;
+
+  const acc = {};
+  entries.forEach(([id, r]) => {
+    featuresOfRating(r, id).forEach(f => {
+      if(!acc[f]) acc[f] = { sum: 0, count: 0 };
+      acc[f].sum += r.rating;
+      acc[f].count += 1;
+    });
   });
+
+  const features = {};
+  Object.entries(acc).forEach(([key, s]) => {
+    const type = key.split(":")[0];
+    const w = shrinkByType[type] || 3;
+    features[key] = {
+      affinity: (s.sum + globalMean * w) / (s.count + w),
+      rawAvg: s.sum / s.count,
+      count: s.count
+    };
+  });
+
+  return { features, globalMean, sampleSize: entries.length };
+}
+
+// Score a candidate as the evidence-weighted mean of its known features.
+// Weight rises with the log of how many times you have rated that feature,
+// so a director seen four times outweighs one seen once.
+function scoreFilm(movie, profile){
+  const matched = [];
+  let weightedSum = 0;
+  let weightTotal = 0;
+  let evidence = 0;
+
+  featuresOf(movie).forEach(key => {
+    const f = profile.features[key];
+    if(!f) return;
+    const type = key.split(":")[0];
+    const weight = (weightByType[type] || 1) * Math.log2(f.count + 1);
+    if(weight <= 0) return;
+    weightedSum += f.affinity * weight;
+    weightTotal += weight;
+    evidence += f.count;
+    matched.push({ key, weight, affinity: f.affinity, rawAvg: f.rawAvg, count: f.count });
+  });
+
+  if(weightTotal === 0) return null;
+
+  // Rank contributors by how far they pull the score away from your mean.
+  matched.sort((a, b) =>
+    Math.abs(b.affinity - profile.globalMean) * b.weight -
+    Math.abs(a.affinity - profile.globalMean) * a.weight
+  );
+
+  return {
+    movie,
+    predicted: weightedSum / weightTotal,
+    evidence,
+    matched
+  };
 }
 
 // ---------- genre chips ----------
@@ -108,16 +248,13 @@ function buildChipRow(containerId, selected, storageKey){
   if(!row) return;
 
   const entries = Object.entries(genreMap).sort((a, b) => a[1].localeCompare(b[1]));
-  const allOn = selected.size === 0;
 
   row.innerHTML =
-    `<button class="chip${allOn ? " on" : ""}" data-all="1">All</button>` +
+    `<button class="chip${selected.size === 0 ? " on" : ""}" data-all="1">All</button>` +
     entries.map(([id, name]) =>
       `<button class="chip${selected.has(Number(id)) ? " on" : ""}" data-genre="${id}">${escapeHtml(name)}</button>`
     ).join("");
 
-  // Toggle classes in place rather than re-rendering the row, so chips keep
-  // their identity and focus across clicks.
   const syncChipClasses = () => {
     row.querySelectorAll(".chip").forEach(c => {
       const on = c.dataset.all
@@ -151,8 +288,8 @@ function unrated(selected){
   return catalogue.filter(m => !ratedIds.has(m.i) && matchesGenres(m, selected));
 }
 
-// Films occasionally have no poster. Render a short labelled placeholder
-// instead of an empty 2:3 slab.
+// ---------- card rendering ----------
+
 function posterHtml(movie){
   if(movie.p){
     return `<div class="poster" style="background-image:url('${posterBase}${movie.p}')"></div>`;
@@ -160,43 +297,68 @@ function posterHtml(movie){
   return `<div class="poster noPoster">No poster</div>`;
 }
 
-function genreNamesFor(movie){
-  return (movie.g || []).map(id => genreMap[id]).filter(Boolean).join(" · ");
+function overviewHtml(movie){
+  const text = overviews[movie.i];
+  if(!text) return `<p class="overview empty" data-for="${movie.i}"></p>`;
+  return `<p class="overview" data-for="${movie.i}">${escapeHtml(text)}</p>`;
 }
 
-// ---------- tabs ----------
+// Scores line: IMDb and Rotten Tomatoes when OMDb has reached this film,
+// TMDB's own score always.
+function scoresHtml(movie){
+  const bits = [];
+  const o = omdbScores[movie.i];
+  if(o && !o.miss){
+    if(o.imdb) bits.push(`<span class="score"><b>IMDb</b> ${o.imdb}</span>`);
+    if(o.rt) bits.push(`<span class="score"><b>RT</b> ${o.rt}%</span>`);
+    if(o.mc) bits.push(`<span class="score"><b>MC</b> ${o.mc}</span>`);
+  }
+  if(movie.v) bits.push(`<span class="score"><b>TMDB</b> ${movie.v}</span>`);
+  const extra = enriched.films[movie.i];
+  if(extra && extra.rt) bits.push(`<span class="score">${extra.rt} min</span>`);
+  if(o && o.rated) bits.push(`<span class="score">${escapeHtml(o.rated)}</span>`);
+  return `<div class="scoreRow" data-for="${movie.i}">${bits.join("")}</div>`;
+}
 
-document.querySelectorAll(".tabBtn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tabBtn").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tabPanel").forEach(p => p.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
-    if(btn.dataset.tab === "dashboard") renderDashboard();
-    if(btn.dataset.tab === "settings") renderSettings();
+function metaLine(movie){
+  const extra = enriched.films[movie.i];
+  if(!extra || extra.dead) return "";
+  const dir = (extra.d || []).map(id => enriched.names.p[id]).filter(Boolean);
+  if(dir.length === 0) return "";
+  return `<div class="credits" data-for="${movie.i}">Directed by ${escapeHtml(dir.join(", "))}</div>`;
+}
+
+// Fill in anything that was still loading when a card was drawn.
+function hydrateVisibleCards(){
+  document.querySelectorAll(".overview.empty").forEach(el => {
+    const text = overviews[el.dataset.for];
+    if(text){
+      el.textContent = text;
+      el.classList.remove("empty");
+    }
   });
-});
+  document.querySelectorAll(".scoreRow").forEach(el => {
+    const movie = catalogue.find(m => String(m.i) === el.dataset.for);
+    if(movie) el.outerHTML = scoresHtml(movie);
+  });
+}
 
 // ---------- RATE TAB ----------
 
 document.getElementById("loadBatchBtn").addEventListener("click", () => {
   const stage = document.getElementById("rateStage");
   if(catalogue.length === 0){
-    stage.innerHTML = `<p class="emptyState">Catalogue hasn't loaded.</p>`;
+    stage.innerHTML = `<p class="emptyState">Catalogue has not loaded.</p>`;
     return;
   }
 
   const pool = unrated(rateGenres);
   if(pool.length === 0){
-    stage.innerHTML = `<p class="emptyState">You've rated everything matching this selection. Pick different genres, or wait for tonight's catalogue refresh.</p>`;
+    stage.innerHTML = `<p class="emptyState">You have rated everything matching this selection. Pick different genres, or wait for tonight's catalogue refresh.</p>`;
     return;
   }
 
   const batchSize = Number(document.getElementById("batchSize").value) || 10;
-
-  // Draw from a popularity-weighted slice, shuffled, so repeated batches
-  // aren't always the same handful of blockbusters in the same order.
-  // The slice scales with batch size so a 50-film batch still has variety.
   const sliceSize = Math.min(pool.length, Math.max(60, batchSize * 6));
   rateQueue = shuffle(pool.slice(0, sliceSize)).slice(0, batchSize);
   renderRateCard();
@@ -230,13 +392,17 @@ function renderRateCard(){
   const ratingButtons = Array.from({length: 10}, (_, i) => i + 1)
     .map(n => `<button data-score="${n}">${n}</button>`).join("");
 
+  const genreNames = (movie.g || []).map(id => genreMap[id]).filter(Boolean).join(" · ");
+
   stage.innerHTML = `
     <div class="card">
       ${posterHtml(movie)}
       <div class="cardBody">
-        <div class="tag">${escapeHtml(genreNamesFor(movie) || "Unknown")}</div>
+        <div class="tag">${escapeHtml(genreNames || "Unknown")}</div>
         <div class="title">${escapeHtml(movie.t)}</div>
-        <div class="year">${movie.y || "n/a"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        <div class="year">${movie.y || "n/a"}</div>
+        ${scoresHtml(movie)}
+        ${metaLine(movie)}
         ${overviewHtml(movie)}
         <div class="rateGrid">${ratingButtons}</div>
         <div class="belowRow">
@@ -259,6 +425,9 @@ function submitRating(movie, value){
     title: movie.t,
     year: movie.y || null,
     genreIds: movie.g || [],
+    // Snapshot the feature list so the rating keeps its meaning even if the
+    // film later leaves the catalogue.
+    features: featuresOf(movie),
     poster: movie.p || null,
     rating: value,
     ts: Date.now()
@@ -269,93 +438,61 @@ function submitRating(movie, value){
   renderRateCard();
 }
 
-// ---------- scoring ----------
-
-function scoredRatings(windowSize){
-  const entries = Object.entries(ratings)
-    .filter(([, r]) => typeof r.rating === "number")
-    .sort((a, b) => b[1].ts - a[1].ts); // newest first
-  if(windowSize === "all") return entries;
-  return entries.slice(0, Number(windowSize));
-}
-
-// How strongly a thinly-rated genre is pulled toward your overall mean.
-// Equivalent to seeding every genre with this many average-scored ratings,
-// so one 9/10 in a genre you've barely touched can't outrank a genre you've
-// rated twenty times at 8.2.
-const shrinkWeight = 5;
-
-function genreStats(windowSize){
-  const entries = scoredRatings(windowSize || "all");
-
-  let total = 0;
-  entries.forEach(([, r]) => { total += r.rating; });
-  const globalMean = entries.length ? total / entries.length : 0;
-
-  const acc = {};
-  entries.forEach(([, r]) => {
-    (r.genreIds || []).forEach(g => {
-      if(!acc[g]) acc[g] = { sum: 0, count: 0 };
-      acc[g].sum += r.rating;
-      acc[g].count += 1;
-    });
-  });
-
-  const out = {};
-  Object.entries(acc).forEach(([g, s]) => {
-    const raw = s.sum / s.count;
-    const shrunk = (s.sum + globalMean * shrinkWeight) / (s.count + shrinkWeight);
-    // avg drives ranking; rawAvg is what the dashboard and explanations show.
-    out[g] = { avg: shrunk, rawAvg: raw, count: s.count };
-  });
-  return out;
-}
-
 // ---------- RECOMMEND TAB ----------
 
-document.getElementById("recommendBtn").addEventListener("click", () => {
+document.getElementById("recommendBtn").addEventListener("click", async () => {
   const stage = document.getElementById("recStage");
   if(catalogue.length === 0){
-    stage.innerHTML = `<p class="emptyState">Catalogue hasn't loaded.</p>`;
+    stage.innerHTML = `<p class="emptyState">Catalogue has not loaded.</p>`;
     return;
   }
 
-  const windowSize = document.getElementById("recWindow").value;
-  const stats = genreStats(windowSize);
-  const trainedOn = scoredRatings(windowSize).length;
+  stage.innerHTML = `<p class="emptyState">Scoring…</p>`;
+  if(enrichedPromise) await enrichedPromise;
 
-  if(trainedOn === 0){
+  const windowSize = document.getElementById("recWindow").value;
+  const profile = buildProfile(windowSize);
+
+  if(profile.sampleSize === 0){
     stage.innerHTML = `<p class="emptyState">No ratings in this window yet. Rate some titles first.</p>`;
     return;
   }
 
-  const pool = unrated(recGenres);
   const scored = [];
-
-  for(const m of pool){
-    const overlap = (m.g || []).filter(g => stats[g]);
-    if(overlap.length === 0) continue;
-    const predicted = overlap.reduce((sum, g) => sum + stats[g].avg, 0) / overlap.length;
-    const sampleCount = overlap.reduce((sum, g) => sum + stats[g].count, 0);
-    scored.push({ movie: m, predicted, overlap, sampleCount });
+  for(const m of unrated(recGenres)){
+    const s = scoreFilm(m, profile);
+    if(s) scored.push(s);
   }
 
   if(scored.length === 0){
-    stage.innerHTML = `<p class="emptyState">Nothing in this scope overlaps the genres you've rated. Widen the genre selection, or rate a few titles in these genres first.</p>`;
+    stage.innerHTML = `<p class="emptyState">Nothing in this scope overlaps what you have rated. Widen the genre selection, or rate a few more titles.</p>`;
     return;
   }
 
-  // Pick from the top few rather than always the single highest, so asking
-  // twice in a row doesn't hand back the same film.
   scored.sort((a, b) => b.predicted - a.predicted);
   const topSlice = scored.slice(0, Math.min(5, scored.length));
   const pick = topSlice[Math.floor(Math.random() * topSlice.length)];
+  renderRecommendation(pick, profile);
+});
 
-  const { movie, predicted, overlap, sampleCount } = pick;
-  const confidence = Math.min(95, Math.round((Math.log2(sampleCount + 1) / Math.log2(30)) * 100));
-  const matchNames = overlap
-    .map(g => `${genreMap[g]} (${stats[g].rawAvg.toFixed(1)} avg over ${stats[g].count})`)
-    .join(", ");
+function renderRecommendation(pick, profile){
+  const stage = document.getElementById("recStage");
+  const { movie, predicted, evidence, matched } = pick;
+
+  const confidence = Math.min(95, Math.round((Math.log2(evidence + 1) / Math.log2(60)) * 100));
+
+  const reasons = matched.slice(0, 4).map(m => {
+    const dir = m.affinity >= profile.globalMean ? "up" : "down";
+    return `<li class="${dir}">
+      <span class="rKind">${featureKind(m.key)}</span>
+      <span class="rName">${escapeHtml(featureLabel(m.key))}</span>
+      <span class="rNum">${m.rawAvg.toFixed(1)} over ${m.count}</span>
+    </li>`;
+  }).join("");
+
+  const basis = enrichedReady
+    ? ""
+    : `<div class="warn">Rich features are still loading or unavailable, so this used genres only.</div>`;
 
   stage.innerHTML = `
     <div class="card recCard">
@@ -363,10 +500,16 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
       <div class="cardBody">
         <div class="tag">Predicted ${predicted.toFixed(1)}/10</div>
         <div class="title">${escapeHtml(movie.t)}</div>
-        <div class="year">${movie.y || "n/a"}${movie.v ? " · TMDB " + movie.v : ""}</div>
+        <div class="year">${movie.y || "n/a"}</div>
+        ${scoresHtml(movie)}
+        ${metaLine(movie)}
         ${overviewHtml(movie)}
-        <div class="why">Matches your taste in ${escapeHtml(matchNames)}.</div>
-        <div class="confidence">${confidence}% confidence, from ${sampleCount} rated title${sampleCount === 1 ? "" : "s"} in these genres, trained on ${trainedOn} rating${trainedOn === 1 ? "" : "s"}</div>
+        ${basis}
+        <div class="whyBlock">
+          <div class="whyHead">Why this one</div>
+          <ul class="reasons">${reasons}</ul>
+        </div>
+        <div class="confidence">${confidence}% confidence, from ${evidence} matching data points across ${profile.sampleSize} ratings</div>
         <div class="belowRow">
           <button id="recWatchlist">Watchlist this</button>
           <button id="recSkip">Not interested</button>
@@ -383,31 +526,70 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
     submitRating(movie, "skip");
     document.getElementById("recommendBtn").click();
   });
+}
+
+// ---------- tabs ----------
+
+document.querySelectorAll(".tabBtn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabBtn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tabPanel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    if(btn.dataset.tab === "dashboard") renderDashboard();
+    if(btn.dataset.tab === "settings") renderSettings();
+  });
 });
 
 // ---------- DASHBOARD ----------
 
+function topFeatures(profile, type, limit, minCount){
+  return Object.entries(profile.features)
+    .filter(([key, f]) => key.startsWith(type + ":") && f.count >= minCount)
+    .sort((a, b) => b[1].affinity - a[1].affinity)
+    .slice(0, limit)
+    .map(([key, f]) => ({ key, ...f }));
+}
+
+function featureListHtml(items){
+  if(items.length === 0) return `<p class="emptyState small">Not enough ratings yet.</p>`;
+  return items.map(i => `
+    <div class="genreRow${i.count < 3 ? " lowSample" : ""}">
+      <span class="name">${escapeHtml(featureLabel(i.key))}</span>
+      <span class="bar"><span style="width:${(i.rawAvg / 10 * 100).toFixed(1)}%"></span></span>
+      <span class="val"><b>${i.rawAvg.toFixed(1)}</b> (${i.count})</span>
+    </div>
+  `).join("");
+}
+
 function renderDashboard(){
   const el = document.getElementById("dashboardStage");
-  const stats = genreStats("all");
-  const rows = Object.entries(stats)
-    .sort((a, b) => b[1].avg - a[1].avg)
-    .map(([g, s]) => `
-      <div class="genreRow${s.count < 3 ? " lowSample" : ""}">
-        <span class="name">${escapeHtml(genreMap[g] || ("Genre " + g))}</span>
-        <span class="bar"><span style="width:${(s.rawAvg / 10 * 100).toFixed(1)}%"></span></span>
-        <span class="val"><b>${s.rawAvg.toFixed(1)}</b> (${s.count})</span>
-      </div>
-    `).join("");
+  const profile = buildProfile("all");
 
   const vals = Object.values(ratings);
   const totalRated = vals.filter(r => typeof r.rating === "number").length;
   const totalSkip = vals.filter(r => r.rating === "skip").length;
   const totalWatchlist = vals.filter(r => r.rating === "watchlist").length;
 
+  if(totalRated === 0){
+    el.innerHTML = `<p class="emptyState">Nothing rated yet.</p>`;
+    return;
+  }
+
   el.innerHTML = `
-    <p class="hint">${totalRated} rated · ${totalSkip} unseen · ${totalWatchlist} on watchlist</p>
-    ${rows || '<p class="emptyState">Nothing rated yet.</p>'}
+    <p class="hint">${totalRated} rated · ${totalSkip} unseen · ${totalWatchlist} on watchlist · average ${profile.globalMean.toFixed(1)}</p>
+
+    <h2 class="dashHead">Genres</h2>
+    ${featureListHtml(topFeatures(profile, "g", 20, 1))}
+
+    <h2 class="dashHead">Themes you rate highest</h2>
+    ${featureListHtml(topFeatures(profile, "k", 12, 2))}
+
+    <h2 class="dashHead">Directors</h2>
+    ${featureListHtml(topFeatures(profile, "d", 8, 2))}
+
+    <h2 class="dashHead">Actors</h2>
+    ${featureListHtml(topFeatures(profile, "c", 8, 2))}
   `;
 }
 
@@ -454,7 +636,9 @@ document.getElementById("wipeBtn").addEventListener("click", () => {
 function renderSettings(){
   document.getElementById("statsLine").textContent =
     `${Object.keys(ratings).length} titles tracked.`;
+
   const src = document.getElementById("sourceLine");
+  if(!src) return;
   if(catalogueMeta.count === 0){
     src.textContent = "Catalogue not loaded.";
     return;
@@ -462,7 +646,11 @@ function renderSettings(){
   const when = catalogueMeta.generated
     ? new Date(catalogueMeta.generated).toLocaleString()
     : "unknown date";
-  src.textContent = `${catalogueMeta.count} films · last refreshed ${when}`;
+  const enrichedCount = Object.keys(enriched.films || {}).length;
+  const ratedCount = Object.values(omdbScores).filter(v => v && !v.miss).length;
+  src.innerHTML =
+    `${catalogueMeta.count} films, last refreshed ${when}.<br>` +
+    `${enrichedCount} enriched with keywords and credits, ${ratedCount} with IMDb scores.`;
 }
 
 // ---------- init ----------
@@ -475,13 +663,13 @@ function renderSettings(){
     if(savedBatch) document.getElementById("batchSize").value = savedBatch;
   }catch(e){ /* non-fatal */ }
 
-  loadOverviews(); // background, deliberately not awaited
+  loadExtras(); // background, deliberately not awaited
 
   try{
     await loadCatalogue();
     stage.innerHTML = `<p class="emptyState">Pick your genres, then "Load batch".</p>`;
   }catch(e){
-    stage.innerHTML = `<p class="emptyState">Couldn't load the film catalogue (${escapeHtml(e.message)}).<br>Run the <strong>buildCatalogue</strong> workflow in the repo's Actions tab to generate it.</p>`;
+    stage.innerHTML = `<p class="emptyState">Could not load the film catalogue (${escapeHtml(e.message)}).<br>Run the <strong>buildCatalogue</strong> workflow in the repo's Actions tab to generate it.</p>`;
   }
   renderSettings();
 })();
