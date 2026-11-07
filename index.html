@@ -4,12 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tasteEngine</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header class="topbar">
-  <h1>tasteEngine</h1>
+  <div class="brand">
+    <svg class="logoMark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+      <path d="M6.5 23.5a11 11 0 1 1 19 0" fill="none" stroke="currentColor" stroke-width="2.6"
+            stroke-linecap="round" opacity=".3"/>
+      <path d="M6.5 23.5A11 11 0 0 1 12 8" fill="none" stroke="currentColor" stroke-width="2.6"
+            stroke-linecap="round"/>
+      <path d="M13.8 12.4l7.3 4.1-7.3 4.1z" fill="currentColor"/>
+    </svg>
+    <h1>tasteEngine</h1>
+  </div>
   <nav class="tabs">
     <button class="tabBtn active" data-tab="rate">Rate</button>
     <button class="tabBtn" data-tab="recommend">Recommend</button>
@@ -22,10 +32,11 @@
 
   <!-- RATE TAB -->
   <section id="tab-rate" class="tabPanel active">
-    <div class="controlsRow">
-      <label>Genre
-        <select id="rateGenre"></select>
-      </label>
+    <div class="field">
+      <span class="fieldLabel">Genres <span class="fieldHint">— none selected means all</span></span>
+      <div class="chipRow" id="rateGenres"></div>
+    </div>
+    <div class="actionRow">
       <button id="loadBatchBtn">Load batch</button>
       <span class="progress" id="rateProgress"></span>
     </div>
@@ -36,13 +47,12 @@
 
   <!-- RECOMMEND TAB -->
   <section id="tab-recommend" class="tabPanel">
-    <div class="controlsRow">
-      <label>Genre scope
-        <select id="recGenreScope">
-          <option value="all">All genres</option>
-        </select>
-      </label>
-      <label>Train on
+    <div class="field">
+      <span class="fieldLabel">Genre scope <span class="fieldHint">— none selected means all</span></span>
+      <div class="chipRow" id="recGenres"></div>
+    </div>
+    <div class="actionRow">
+      <label class="inlineField">Train on
         <select id="recWindow">
           <option value="10">Last 10 ratings</option>
           <option value="50">Last 50 ratings</option>
@@ -86,6 +96,10 @@
   </section>
 
 </main>
+
+<footer class="siteFooter">
+  This product uses the <a href="https://www.themoviedb.org/" rel="noopener noreferrer" target="_blank">TMDB</a> API but is not endorsed or certified by TMDB.
+</footer>
 
 <script src="app.js"></script>
 </body>

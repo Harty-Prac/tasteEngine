@@ -4,6 +4,8 @@
 // holds the TMDB key as a repository secret. Ratings live in localStorage.
 
 const lsKeyRatings = "tasteEngine.ratings";
+const lsKeyRateGenres = "tasteEngine.rateGenres";
+const lsKeyRecGenres = "tasteEngine.recGenres";
 const posterBase = "https://image.tmdb.org/t/p/w342"; // public CDN, needs no key
 const cataloguePath = "data/catalogue.json";
 
@@ -13,6 +15,10 @@ let catalogueMeta = { generated: null, count: 0 };
 let ratings = loadRatings();
 let ratedIds = new Set(Object.keys(ratings).map(Number));
 let rateQueue = [];
+
+// Empty set means "all genres" everywhere it is used.
+let rateGenres = loadGenreSet(lsKeyRateGenres);
+let recGenres = loadGenreSet(lsKeyRecGenres);
 
 // ---------- storage ----------
 
@@ -24,6 +30,18 @@ function loadRatings(){
 function saveRatings(){
   try{ localStorage.setItem(lsKeyRatings, JSON.stringify(ratings)); }
   catch(e){ console.warn("could not save ratings", e); }
+}
+
+function loadGenreSet(key){
+  try{
+    const raw = JSON.parse(localStorage.getItem(key));
+    return new Set(Array.isArray(raw) ? raw.map(Number) : []);
+  }catch(e){ return new Set(); }
+}
+
+function saveGenreSet(key, set){
+  try{ localStorage.setItem(key, JSON.stringify(Array.from(set))); }
+  catch(e){ /* non-fatal */ }
 }
 
 function escapeHtml(s){
@@ -42,34 +60,71 @@ async function loadCatalogue(){
   catalogue = data.movies || [];
   catalogueMeta = { generated: data.generated || null, count: catalogue.length };
   if(catalogue.length === 0) throw new Error("catalogue is empty");
-  populateGenreSelects();
+  renderGenreChips();
 }
 
-function populateGenreSelects(){
-  const rateSel = document.getElementById("rateGenre");
-  const recSel = document.getElementById("recGenreScope");
-  rateSel.innerHTML = `<option value="all">All genres</option>`;
-  recSel.innerHTML = `<option value="all">All genres</option>`;
-  Object.entries(genreMap)
-    .sort((a, b) => a[1].localeCompare(b[1]))
-    .forEach(([id, name]) => {
-      const opt = `<option value="${id}">${escapeHtml(name)}</option>`;
-      rateSel.insertAdjacentHTML("beforeend", opt);
-      recSel.insertAdjacentHTML("beforeend", opt);
+// ---------- genre chips ----------
+
+function renderGenreChips(){
+  buildChipRow("rateGenres", rateGenres, lsKeyRateGenres);
+  buildChipRow("recGenres", recGenres, lsKeyRecGenres);
+}
+
+function buildChipRow(containerId, selected, storageKey){
+  const row = document.getElementById(containerId);
+  if(!row) return;
+
+  const entries = Object.entries(genreMap).sort((a, b) => a[1].localeCompare(b[1]));
+  const allOn = selected.size === 0;
+
+  row.innerHTML =
+    `<button class="chip${allOn ? " on" : ""}" data-all="1">All</button>` +
+    entries.map(([id, name]) =>
+      `<button class="chip${selected.has(Number(id)) ? " on" : ""}" data-genre="${id}">${escapeHtml(name)}</button>`
+    ).join("");
+
+  // Toggle classes in place rather than re-rendering the row, so chips keep
+  // their identity and focus across clicks.
+  const syncChipClasses = () => {
+    row.querySelectorAll(".chip").forEach(c => {
+      const on = c.dataset.all
+        ? selected.size === 0
+        : selected.has(Number(c.dataset.genre));
+      c.classList.toggle("on", on);
     });
+  };
+
+  row.querySelectorAll(".chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      if(chip.dataset.all){
+        selected.clear();
+      }else{
+        const id = Number(chip.dataset.genre);
+        if(selected.has(id)) selected.delete(id);
+        else selected.add(id);
+      }
+      saveGenreSet(storageKey, selected);
+      syncChipClasses();
+    });
+  });
 }
 
-function inGenre(movie, genreId){
-  if(genreId === "all") return true;
-  return (movie.g || []).includes(Number(genreId));
+function matchesGenres(movie, selected){
+  if(selected.size === 0) return true;
+  return (movie.g || []).some(g => selected.has(g));
 }
 
-function unrated(genreId){
-  return catalogue.filter(m => !ratedIds.has(m.i) && inGenre(m, genreId));
+function unrated(selected){
+  return catalogue.filter(m => !ratedIds.has(m.i) && matchesGenres(m, selected));
 }
 
-function posterStyle(posterPath){
-  return posterPath ? `background-image:url('${posterBase}${posterPath}')` : "";
+// Films occasionally have no poster. Render a short labelled placeholder
+// instead of an empty 2:3 slab.
+function posterHtml(movie){
+  if(movie.p){
+    return `<div class="poster" style="background-image:url('${posterBase}${movie.p}')"></div>`;
+  }
+  return `<div class="poster noPoster">No poster</div>`;
 }
 
 function genreNamesFor(movie){
@@ -97,12 +152,13 @@ document.getElementById("loadBatchBtn").addEventListener("click", () => {
     stage.innerHTML = `<p class="emptyState">Catalogue hasn't loaded.</p>`;
     return;
   }
-  const genreId = document.getElementById("rateGenre").value;
-  const pool = unrated(genreId);
+
+  const pool = unrated(rateGenres);
   if(pool.length === 0){
-    stage.innerHTML = `<p class="emptyState">You've rated everything in this genre. Pick another, or wait for tonight's catalogue refresh.</p>`;
+    stage.innerHTML = `<p class="emptyState">You've rated everything matching this selection. Pick different genres, or wait for tonight's catalogue refresh.</p>`;
     return;
   }
+
   // Draw from the top slice by popularity, shuffled, so repeated batches
   // aren't always the same handful of blockbusters in the same order.
   const slice = pool.slice(0, Math.min(60, pool.length));
@@ -136,7 +192,7 @@ function renderRateCard(){
 
   stage.innerHTML = `
     <div class="card">
-      <div class="poster" style="${posterStyle(movie.p)}"></div>
+      ${posterHtml(movie)}
       <div class="cardBody">
         <div class="tag">${escapeHtml(genreNamesFor(movie) || "Unknown")}</div>
         <div class="title">${escapeHtml(movie.t)}</div>
@@ -182,8 +238,19 @@ function scoredRatings(windowSize){
   return entries.slice(0, Number(windowSize));
 }
 
+// How strongly a thinly-rated genre is pulled toward your overall mean.
+// Equivalent to seeding every genre with this many average-scored ratings,
+// so one 9/10 in a genre you've barely touched can't outrank a genre you've
+// rated twenty times at 8.2.
+const shrinkWeight = 5;
+
 function genreStats(windowSize){
   const entries = scoredRatings(windowSize || "all");
+
+  let total = 0;
+  entries.forEach(([, r]) => { total += r.rating; });
+  const globalMean = entries.length ? total / entries.length : 0;
+
   const acc = {};
   entries.forEach(([, r]) => {
     (r.genreIds || []).forEach(g => {
@@ -192,9 +259,13 @@ function genreStats(windowSize){
       acc[g].count += 1;
     });
   });
+
   const out = {};
   Object.entries(acc).forEach(([g, s]) => {
-    out[g] = { avg: s.sum / s.count, count: s.count };
+    const raw = s.sum / s.count;
+    const shrunk = (s.sum + globalMean * shrinkWeight) / (s.count + shrinkWeight);
+    // avg drives ranking; rawAvg is what the dashboard and explanations show.
+    out[g] = { avg: shrunk, rawAvg: raw, count: s.count };
   });
   return out;
 }
@@ -208,7 +279,6 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
     return;
   }
 
-  const scope = document.getElementById("recGenreScope").value;
   const windowSize = document.getElementById("recWindow").value;
   const stats = genreStats(windowSize);
   const trainedOn = scoredRatings(windowSize).length;
@@ -218,7 +288,7 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
     return;
   }
 
-  const pool = unrated(scope);
+  const pool = unrated(recGenres);
   const scored = [];
 
   for(const m of pool){
@@ -230,7 +300,7 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
   }
 
   if(scored.length === 0){
-    stage.innerHTML = `<p class="emptyState">Nothing in this scope overlaps the genres you've rated. Try "All genres", or rate a few titles in this genre first.</p>`;
+    stage.innerHTML = `<p class="emptyState">Nothing in this scope overlaps the genres you've rated. Widen the genre selection, or rate a few titles in these genres first.</p>`;
     return;
   }
 
@@ -243,12 +313,12 @@ document.getElementById("recommendBtn").addEventListener("click", () => {
   const { movie, predicted, overlap, sampleCount } = pick;
   const confidence = Math.min(95, Math.round((Math.log2(sampleCount + 1) / Math.log2(30)) * 100));
   const matchNames = overlap
-    .map(g => `${genreMap[g]} (${stats[g].avg.toFixed(1)} avg)`)
+    .map(g => `${genreMap[g]} (${stats[g].rawAvg.toFixed(1)} avg over ${stats[g].count})`)
     .join(", ");
 
   stage.innerHTML = `
     <div class="card recCard">
-      <div class="poster" style="${posterStyle(movie.p)}"></div>
+      ${posterHtml(movie)}
       <div class="cardBody">
         <div class="tag">Predicted ${predicted.toFixed(1)}/10</div>
         <div class="title">${escapeHtml(movie.t)}</div>
@@ -283,8 +353,8 @@ function renderDashboard(){
     .map(([g, s]) => `
       <div class="genreRow">
         <span>${escapeHtml(genreMap[g] || ("Genre " + g))}</span>
-        <span class="bar"><span style="width:${(s.avg / 10 * 100)}%"></span></span>
-        <span>${s.avg.toFixed(1)} (${s.count})</span>
+        <span class="bar"><span style="width:${(s.rawAvg / 10 * 100)}%"></span></span>
+        <span>${s.rawAvg.toFixed(1)} (${s.count})</span>
       </div>
     `).join("");
 
@@ -359,7 +429,7 @@ function renderSettings(){
   const stage = document.getElementById("rateStage");
   try{
     await loadCatalogue();
-    stage.innerHTML = `<p class="emptyState">Pick a genre, then "Load batch".</p>`;
+    stage.innerHTML = `<p class="emptyState">Pick your genres, then "Load batch".</p>`;
   }catch(e){
     stage.innerHTML = `<p class="emptyState">Couldn't load the film catalogue (${escapeHtml(e.message)}).<br>Run the <strong>buildCatalogue</strong> workflow in the repo's Actions tab to generate it.</p>`;
   }

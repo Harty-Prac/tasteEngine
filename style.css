@@ -7,13 +7,26 @@
 body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
 h1,h2{font-weight:600;margin:0}
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:10px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand h1{font-size:19px;letter-spacing:-.01em}
+.logoMark{color:var(--accent);flex:none;display:block}
 .tabs{display:flex;gap:6px}
 .tabBtn{background:var(--surface);color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
 .tabBtn.active{color:var(--fg);border-color:var(--accent)}
 main{max-width:720px;margin:0 auto;padding:20px}
 .tabPanel{display:none}
 .tabPanel.active{display:block}
-.controlsRow{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:16px;font-size:13px}
+/* Genre chips + action rows. Buttons live on their own row so they can never
+   drift out of line with a wrapping control above them. */
+.field{margin-bottom:14px}
+.fieldLabel{display:block;font-size:12px;color:var(--muted);margin-bottom:8px}
+.fieldHint{opacity:.7}
+.chipRow{display:flex;flex-wrap:wrap;gap:6px}
+.chip{background:var(--surface);color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:500;cursor:pointer;line-height:1.3}
+.chip:hover{color:var(--fg)}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#1a1507}
+.actionRow{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:18px}
+.inlineField{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}
 label{display:flex;flex-direction:column;gap:4px;color:var(--muted)}
 select,input[type=text]{background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:14px}
 button{background:var(--accent);color:#1a1507;border:none;border-radius:6px;padding:9px 16px;cursor:pointer;font-size:13px;font-weight:600}
@@ -24,12 +37,13 @@ button:disabled{opacity:.5;cursor:default}
 
 .card{width:100%;max-width:320px;background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden}
 .poster{width:100%;aspect-ratio:2/3;background:var(--surface2) center/cover no-repeat}
+.poster.noPoster{aspect-ratio:auto;height:64px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;letter-spacing:.06em;text-transform:uppercase}
 .cardBody{padding:14px 16px 18px}
 .tag{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);font-weight:600}
 .title{font-size:19px;margin:6px 0 2px;line-height:1.2}
 .year{color:var(--muted);font-size:13px}
-.rateGrid{display:flex;gap:5px;margin-top:12px;flex-wrap:wrap;justify-content:center}
-.rateGrid button{width:28px;height:34px;padding:0;background:var(--surface2);color:var(--fg);border:1px solid var(--border)}
+.rateGrid{display:grid;grid-template-columns:repeat(10,1fr);gap:4px;margin-top:12px}
+.rateGrid button{width:100%;height:34px;padding:0;background:var(--surface2);color:var(--fg);border:1px solid var(--border);font-size:12px}
 .rateGrid button:hover{border-color:var(--accent)}
 .belowRow{display:flex;gap:8px;margin-top:10px;justify-content:center}
 .belowRow button{background:none;border:none;color:var(--muted);text-decoration:underline;font-size:12px;padding:4px}
@@ -48,3 +62,6 @@ button:disabled{opacity:.5;cursor:default}
 .genreRow{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px}
 .genreRow .bar{flex:1;height:6px;background:var(--surface2);border-radius:4px;margin:0 10px;position:relative;overflow:hidden}
 .genreRow .bar span{position:absolute;inset:0;background:var(--accent);border-radius:4px}
+
+.siteFooter{max-width:720px;margin:0 auto;padding:28px 20px 36px;color:var(--muted);font-size:11px;line-height:1.5;text-align:center}
+.siteFooter a{color:var(--muted)}
